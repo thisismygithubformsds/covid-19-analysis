@@ -1,0 +1,166 @@
+---
+title: "COVID-19: An Exploratory Data Analysis"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(scales)
+```
+
+Let's load the relevant data sets.
+```{r}
+# Johns Hopkins CSSEGISandData data sets
+csse_global_deaths <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv"
+csse_global_cases <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
+
+# provided by CU Boulder on Coursera's R Programming Capstone Project course
+global_pop_estimates <- "https://raw.githubusercontent.com/thisismygithubformsds/covid-19-analysis/main/data/global_population_estimates.csv"
+
+relevant_files <- c(csse_global_deaths, csse_global_cases, global_pop_estimates)
+
+if(!file.exists("data")) {
+  dir.create("data")
+}
+
+download_file <- function(file_link) {
+  if (!file.exists(file_link)) {
+    download.file(file_link, destfile = str_glue("data/{file}", file = basename(file_link)), method = "curl")
+  }
+}
+
+for (file in relevant_files) {
+  if (!file.exists(str_glue("data/{file}", file = basename(file)))) {
+    download_file(file)
+  }
+}
+```
+
+Next, we'll get the data loaded and tidied.
+```{r}
+johns_hopkins_csse_global_deaths <- read_csv("data/time_series_covid19_deaths_global.csv")
+johns_hopkins_csse_global_cases <- read_csv("data/time_series_covid19_confirmed_global.csv")
+
+global_pop_est <- read_csv("data/global_population_estimates.csv")
+
+# Johns Hopkins global data
+johns_hopkins_csse_global_deaths <- johns_hopkins_csse_global_deaths %>% pivot_longer(matches("\\d{2}"), names_to = "date", values_to = "deaths") %>% mutate(date = as.Date(date,"%m/%d/%y"))
+johns_hopkins_csse_global_cases <- johns_hopkins_csse_global_cases %>% pivot_longer(matches("\\d{2}"), names_to = "date", values_to = "cases") %>% mutate(date = as.Date(date,"%m/%d/%y"))
+
+johns_hopkins_csse_global_joined <- johns_hopkins_csse_global_cases %>% left_join(johns_hopkins_csse_global_deaths %>% select(`Province/State`, `Country/Region`, date, deaths), by = join_by(`Province/State`, `Country/Region`, date))
+
+johns_hopkins_csse_global_joined <- johns_hopkins_csse_global_joined %>%
+  rename("Province_State" = `Province/State`,
+         "Country_Region" = `Country/Region`,
+         "Long_" = Long) %>% 
+  # remove entities that aren't countries
+  filter(!(Country_Region %in% c("Diamond Princess", "Holy See", "MS Zaandam", "Summer Olympics 2020", "Winter Olympics 2022")))
+```
+
+# COVID-19: World
+  
+I'd like to get a quick overview of global COVID-19 case and death rates. In order to do this, I'll have to first do some more tidying of the data. 
+```{r}
+# case and death rates will be based on the country's 2021 population
+global_pop_est <- global_pop_est %>% 
+  pivot_longer(matches("\\d"), names_to = "year", names_pattern = "^(....).*", values_to = "population") %>% 
+  mutate(year = as.integer(year), population = as.numeric(population)) %>% 
+  filter(year == 2021)
+
+overview <- johns_hopkins_csse_global_joined %>% 
+  mutate(Country_Region = case_when(Country_Region == "Congo (Brazzaville)" ~ "Congo, Dem. Rep.",
+                                    Country_Region == "Congo (Kinshasa)" ~ "Congo, Rep.",
+                                    Country_Region == "Bahamas" ~ "Bahamas, The",
+                                    Country_Region == "Brunei" ~ "Brunei Darussalam",
+                                    Country_Region == "Burma" ~ "Myanmar",
+                                    Country_Region == "Czechia" ~ "Czech Republic",
+                                    Country_Region == "Egypt" ~ "Egypt, Arab Rep.",
+                                    Country_Region == "Gambia" ~ "Gambia, The",
+                                    Country_Region == "Iran" ~ "Iran, Islamic Rep.",
+                                    Country_Region == "Korea, North" ~ "Korea, Dem. People's Rep.",
+                                    Country_Region == "Korea, South" ~ "Korea, Rep.",
+                                    Country_Region == "Kyrgyzstan" ~ "Kyrgyz Republic",
+                                    Country_Region == "Laos" ~ "Lao PDR",
+                                    Country_Region == "Micronesia" ~ "Micronesia, Fed. Sts.",
+                                    Country_Region == "Russia" ~ "Russian Federation",
+                                    Country_Region == "Saint Kitts and Nevis" ~ "St. Kitts and Nevis",
+                                    Country_Region == "Saint Lucia" ~ "St. Lucia",
+                                    Country_Region == "Saint Vincent and the Grenadines" ~ "St. Vincent and the Grenadines",
+                                    Country_Region == "Slovakia" ~ "Slovak Republic",
+                                    Country_Region == "Syria" ~ "Syrian Arab Republic",
+                                    Country_Region == "US" ~ "United States",
+                                    Country_Region == "Venezuela" ~ "Venezuela, RB",
+                                    Country_Region == "Yemen" ~ "Yemen, Rep.",
+                                    .default = Country_Region)) %>% 
+  left_join(global_pop_est %>% select(`Country Name`, year, population), by = join_by(Country_Region == `Country Name`))
+
+overview <- overview %>% 
+  mutate(population = case_when(Country_Region == "Taiwan*" ~ 23570000, # from Wikipedia
+                                .default = population)) %>% 
+  filter(date == max(date)) %>%
+  group_by(Country_Region, population) %>% 
+  summarise(cases = sum(cases),
+            deaths = sum(deaths)) %>% 
+  ungroup() %>% 
+  mutate(cases_100k = round(cases / population * 100000, 3), deaths_100k = round(deaths / population * 100000, 3))
+overview
+
+overview %>% arrange(desc(cases_100k)) %>% head(10) %>% ggplot(aes(x = reorder(Country_Region, -cases_100k), y = cases_100k, fill = Country_Region)) +
+  geom_col(stat = "identity") +
+  labs(x = "Country/Region") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 50, hjust = 1))
+
+overview %>% arrange(desc(deaths_100k)) %>% head(10) %>% ggplot(aes(x = reorder(Country_Region, -deaths_100k), y = deaths_100k, fill = Country_Region)) +
+  geom_col(stat = "identity") +
+  labs(x = "Country/Region") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 50, hjust = 1))
+```
+  
+It looks like Peru has the highest COVID-19 death rate, yet is not in the top 10 in terms of cases per 100,000 people, which seems surprising at first glance. However, with a little more research on the internet, one can discover that Peru's healthcare system is pretty abysmal compared to the rest of the world due to several socioeconomic factors that would require a much more in-depth analysis to uncover how they affected Peru's deaths per 100,000 people due to COVID-19. In saying this, I do not hold any personal bias for or against Peru; these are just my initial observations.
+
+```{r}
+# tidy johns_hopkins_csse_global_joined for use in model
+m1 <- johns_hopkins_csse_global_joined %>% group_by(date, Country_Region) %>% 
+  summarise(cases = sum(cases),
+            deaths = sum(deaths)) %>% distinct()
+
+m1
+
+# summarize total cases and deaths to date by day
+m1 <- m1 %>% group_by(date) %>% summarise(cases = sum(cases),
+                                              deaths = sum(deaths))
+
+# create 1-day difference columns for cases and deaths
+m1 <- m1 %>% mutate(delta_cases = cases - lag(cases),
+                    delta_deaths = deaths - lag(deaths))
+
+# create several plots with regression lines, filtering out data prior to the stated date
+dates <- c("2020-01-01", "2021-01-01", "2022-01-01", "2023-01-01")
+for (d in dates) {
+  temp_m1 <- m1 %>% filter(date > d)
+
+  print(temp_m1 %>% ggplot(aes(x = date, y = delta_cases)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, color = "red") +
+    scale_y_continuous(labels = comma) +
+      ggtitle(str_glue("start date = {date}", date = d))
+  )
+}
+```
+\
+The regression lines, plotted in red, switch from having a positive slope to a negative one, indicating that the number of daily new cases is trending downward over time. However, while this has remained true recently, there is a possibility this may not remain the case due to a number of factors, including but not limited to unfavorable mutations of the virus and decrease in vigilance by the population.
+  
+# Conclusion
+The COVID-19 pandemic put a lot of strain on the world and disproportionately affected certain areas more than other areas due to a number of socioeconomic factors. There may exist some bias in the data sets I used here, as it is possible that COVID-19 cases may have been underreported or overreported, either willfully or negligently, in some areas of the world. There is much more research that could be done, as I have only scratched the surface in this analysis.
+
+```{r}
+sessionInfo()
+```
+
